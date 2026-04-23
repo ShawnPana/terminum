@@ -1,52 +1,18 @@
 #!/usr/bin/env bash
-# browse — tell a tdub-aware terminal to overlay a browser at the current
-# cursor position, sized to the current terminal (or tmux pane). Works inside
-# tmux by wrapping the OSC in tmux's DCS passthrough so the sequence reaches
-# the outer terminal unmodified. Other (non-tdub) terminals silently ignore
-# the unknown OSC.
+# browse — tell a tdub-aware terminal to flip the whole window into browser
+# mode. Works inside tmux by wrapping the OSC in tmux's DCS passthrough so
+# the sequence reaches the outer terminal unmodified. Non-tdub terminals
+# silently ignore the unknown OSC.
 URL="${1:-about:blank}"
-read _lines _cols < <(stty size 2>/dev/null)
-COLS="${_cols:-80}"
-LINES="${_lines:-24}"
 
-# tmux passthrough rules (allow-passthrough must be on):
-#   wrap as  ESC P tmux ; <payload with every ESC doubled> ESC \
-# The original ST (ESC \) inside the payload is doubled to ESC ESC \,
-# and the outer DCS terminator is a literal ESC \.
 if [ -n "${TMUX:-}" ]; then
   tmux set -g -q allow-passthrough on 2>/dev/null
+  printf '\ePtmux;\e\e]1983;tdub-browse;pid=%s;url=%s\e\e\\\e\\' "$$" "$URL"
+else
+  printf '\e]1983;tdub-browse;pid=%s;url=%s\e\\' "$$" "$URL"
 fi
 
-emit_start() {
-  # Clear + home the CURRENT terminal (the pane, if in tmux; the whole
-  # screen otherwise). This goes unwrapped so tmux applies it to its pane
-  # model — the side effect is that tmux moves the outer terminal's cursor
-  # to the pane's top-left, which is where we want the browser to anchor.
-  printf '\e[2J\e[H'
-  if [ -n "${TMUX:-}" ]; then
-    # DCS-wrapped OSC: tmux unwraps and forwards to tdub at the current
-    # outer-cursor position (which is now the pane's top-left).
-    printf '\ePtmux;\e\e]1983;tdub-browse;pid=%s;cols=%s;rows=%s;url=%s\e\e\\\e\\' \
-      "$$" "$COLS" "$LINES" "$URL"
-  else
-    printf '\e]1983;tdub-browse;pid=%s;cols=%s;rows=%s;url=%s\e\\' \
-      "$$" "$COLS" "$LINES" "$URL"
-  fi
-}
-
-emit_end() {
-  if [ -n "${TMUX:-}" ]; then
-    printf '\ePtmux;\e\e]1983;tdub-browse-end;pid=%s\e\e\\\e\\' "$$"
-  else
-    printf '\e]1983;tdub-browse-end;pid=%s\e\\' "$$"
-  fi
-}
-
-cleanup() {
-  emit_end
-  exit 0
-}
-trap cleanup TERM HUP INT
-
-emit_start
+# Stay alive so tdub can reach back and SIGTERM us to return control to the
+# shell when the user exits the browser. Sleep is exec'd so there's nothing
+# to clean up.
 exec sleep 2147483647

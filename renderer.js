@@ -69,8 +69,6 @@ window.addEventListener('keydown', (e) => {
   if (seq !== null) ipcRenderer.send('pty-write', '\x1b' + seq);
 }, true);
 
-// Kill the dead-key composition popup that would otherwise intercept
-// Option+<letter> before our keydown handler gets to it.
 ['compositionstart', 'compositionupdate', 'compositionend', 'textInput'].forEach((type) => {
   window.addEventListener(type, swallow, true);
 });
@@ -79,8 +77,8 @@ window.addEventListener('beforeinput', (e) => {
 }, true);
 
 // Private OSC 1983 = tdub-specific commands. Payload subcommands:
-//   tdub-browse;pid=X;cols=W;rows=H;url=U  — open a browser overlay
-//   tdub-browse-end;pid=X                  — tear down the overlay keyed by X
+//   tdub-browse;pid=X;url=U      — flip the window into browser mode
+//   tdub-browse-end;pid=X        — flip back to terminal mode
 // The URL is always the last param so it can contain `;` and `=` raw.
 term.parser.registerOscHandler(1983, (data) => {
   const semi = data.indexOf(';');
@@ -90,8 +88,6 @@ term.parser.registerOscHandler(1983, (data) => {
   if (kind === 'tdub-browse') {
     const params = {};
     let urlPart = '';
-    // Split on ';' but stop parsing once we hit `url=…`; treat the remainder
-    // verbatim as the URL.
     let remaining = rest;
     while (remaining.length) {
       const i = remaining.indexOf(';');
@@ -109,59 +105,27 @@ term.parser.registerOscHandler(1983, (data) => {
     }
     ipcRenderer.send('tdub-browse', {
       pid: String(params.pid || ''),
-      cellX: term.buffer.active.cursorX,
-      cellY: term.buffer.active.cursorY,
-      cols: +params.cols || term.cols,
-      rows: +params.rows || term.rows,
       url: urlPart || 'about:blank',
     });
     return true;
   }
 
   if (kind === 'tdub-browse-end') {
-    const params = {};
-    for (const piece of rest.split(';')) {
-      const eq = piece.indexOf('=');
-      if (eq !== -1) params[piece.slice(0, eq)] = piece.slice(eq + 1);
-    }
-    ipcRenderer.send('tdub-browse-end', { pid: String(params.pid || '') });
+    ipcRenderer.send('tdub-browse-end');
     return true;
   }
 
   return false;
 });
 
-function reportCellMetrics() {
-  const cell = term._core && term._core._renderService
-    && term._core._renderService.dimensions
-    && term._core._renderService.dimensions.css
-    && term._core._renderService.dimensions.css.cell;
-  if (!cell) return;
-  const el = document.getElementById('term');
-  const rect = el.getBoundingClientRect();
-  const style = getComputedStyle(el);
-  ipcRenderer.send('cell-metrics', {
-    cellWidth: cell.width,
-    cellHeight: cell.height,
-    cols: term.cols,
-    rows: term.rows,
-    origin: {
-      x: rect.left + parseFloat(style.paddingLeft),
-      y: rect.top + parseFloat(style.paddingTop),
-    },
-  });
-}
-
 function reportSize() {
   fit.fit();
   ipcRenderer.send('pty-resize', { cols: term.cols, rows: term.rows });
-  reportCellMetrics();
 }
 
 window.addEventListener('resize', reportSize);
 
 requestAnimationFrame(() => {
   fit.fit();
-  reportCellMetrics();
   ipcRenderer.send('renderer-ready', { cols: term.cols, rows: term.rows });
 });
