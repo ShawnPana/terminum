@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #1b1b1b; color: #bbb;
+    font: 11px -apple-system, BlinkMacSystemFont, sans-serif;
+    overflow: hidden; }
+  body { -webkit-user-select: none; user-select: none; }
+  #bar { display: flex; align-items: center; height: 28px; padding: 0 6px; gap: 4px; box-sizing: border-box; }
+  button { background: transparent; border: none; color: #bbb; width: 22px; height: 22px;
+    border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; }
+  button:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
+  button:disabled { color: #555; cursor: default; }
+  #url { flex: 1; min-width: 0; font: 11px ui-monospace, SFMono-Regular, monospace;
+    color: #ddd; padding: 3px 8px; background: #0d0d0d; border: 1px solid transparent;
+    border-radius: 4px; outline: none; -webkit-user-select: text; user-select: text; }
+  #url:focus { background: #050505; border-color: #3a3a3a; }
+  #url::placeholder { color: #555; }
+  #suggestions { margin: 2px 6px 0; background: #0d0d0d; border: 1px solid #3a3a3a;
+    border-radius: 4px; overflow: hidden; display: none; }
+  #suggestions.visible { display: block; }
+  .sugg-item { display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px; cursor: pointer; color: #ddd;
+    font: 11px ui-monospace, SFMono-Regular, monospace;
+    white-space: nowrap; overflow: hidden; }
+  .sugg-item:hover, .sugg-item.active { background: #1e2c3a; color: #fff; }
+  .sugg-icon { flex: 0 0 12px; width: 12px; text-align: center;
+    color: #666; font-size: 11px; line-height: 1; }
+  .sugg-item.active .sugg-icon { color: #fff; }
+  .sugg-title { color: #ddd; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
+  .sugg-url { color: #7a7a7a; flex: 1; overflow: hidden; text-overflow: ellipsis;
+    font-size: 10px; }
+  .sugg-query { color: #ddd; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .sugg-item.active .sugg-url { color: #a8c3dd; }
+  .sugg-sep { color: #555; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <button id="back" title="Back" disabled>‹</button>
+    <button id="forward" title="Forward" disabled>›</button>
+    <button id="reload" title="Reload">⟳</button>
+    <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="Enter URL or search…" />
+  </div>
+  <div id="suggestions"></div>
+<script>
+  const { ipcRenderer } = require('electron');
+  const $ = (id) => document.getElementById(id);
+  const urlInput = $('url');
+  const suggEl = $('suggestions');
+
+  // Clicking anywhere on the chrome bar doesn't need to do anything special
+  // in tdub (there's no pane-engagement concept — there's only one browser).
+  // Emit chrome-click anyway in case main wants to react later.
+  document.addEventListener('mousedown', () => {
+    ipcRenderer.send('chrome-click');
+  }, true);
+
+  // Option+Escape from the navbar → leave browser mode entirely.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      ipcRenderer.send('chrome-defocus');
+    }
+  }, true);
+
+  $('back').addEventListener('click', () => ipcRenderer.send('nav-back'));
+  $('forward').addEventListener('click', () => ipcRenderer.send('nav-forward'));
+  $('reload').addEventListener('click', () => ipcRenderer.send('nav-reload'));
+
+  let suggestions = [];
+  let activeIdx = -1;
+  let editing = false;
+  let suggestReq = 0;
+
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function reportHeight() {
+    if (!suggEl.classList.contains('visible')) {
+      ipcRenderer.send('chrome-expand', 0);
+      return;
+    }
+    const suggRect = suggEl.getBoundingClientRect();
+    const needed = Math.ceil(suggRect.bottom + 4);
+    ipcRenderer.send('chrome-expand', needed);
+  }
+
+  function renderSuggestions() {
+    if (!suggestions.length) {
+      suggEl.classList.remove('visible');
+      suggEl.innerHTML = '';
+      reportHeight();
+      return;
+    }
+    suggEl.classList.add('visible');
+    suggEl.innerHTML = suggestions.map((s, i) => {
+      const active = i === activeIdx ? ' active' : '';
+      if (s.type === 'url') {
+        const title = escapeHtml(s.title || '');
+        const url = escapeHtml(s.url);
+        const body = title
+          ? `<span class="sugg-title">${title}</span><span class="sugg-sep">—</span><span class="sugg-url">${url}</span>`
+          : `<span class="sugg-url">${url}</span>`;
+        return `<div class="sugg-item${active}" data-idx="${i}"><span class="sugg-icon">⌁</span>${body}</div>`;
+      }
+      return `<div class="sugg-item${active}" data-idx="${i}"><span class="sugg-icon">⚲</span><span class="sugg-query">${escapeHtml(s.query)}</span></div>`;
+    }).join('');
+    for (const node of suggEl.querySelectorAll('.sugg-item')) {
+      node.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const idx = +node.dataset.idx;
+        if (suggestions[idx]) pick(suggestions[idx]);
+      });
+    }
+    requestAnimationFrame(reportHeight);
+  }
+
+  async function updateSuggestions() {
+    if (!editing) return;
+    const q = urlInput.value;
+    const myReq = ++suggestReq;
+    let results = [];
+    try {
+      results = await ipcRenderer.invoke('omnibox-suggest', q);
+    } catch {}
+    if (myReq !== suggestReq) return;
+    suggestions = results || [];
+    activeIdx = suggestions.length > 0 ? 0 : -1;
+    renderSuggestions();
+  }
+
+  function closeSuggestions() {
+    suggestions = [];
+    activeIdx = -1;
+    renderSuggestions();
+  }
+
+  function pick(s) {
+    const value = s.type === 'url' ? s.url : s.query;
+    urlInput.value = value;
+    closeSuggestions();
+    urlInput.blur();
+    ipcRenderer.send('nav-url', value);
+  }
+
+  urlInput.addEventListener('focus', () => {
+    editing = true;
+    urlInput.select();
+    updateSuggestions();
+  });
+  urlInput.addEventListener('blur', () => {
+    editing = false;
+    setTimeout(closeSuggestions, 120);
+  });
+  urlInput.addEventListener('input', updateSuggestions);
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (activeIdx >= 0 && suggestions[activeIdx]) {
+        pick(suggestions[activeIdx]);
+      } else {
+        const v = urlInput.value.trim();
+        if (v) {
+          closeSuggestions();
+          urlInput.blur();
+          ipcRenderer.send('nav-url', v);
+        }
+      }
+    } else if (e.key === 'Escape') {
+      if (suggestions.length) closeSuggestions();
+      else urlInput.blur();
+    } else if (e.key === 'ArrowDown') {
+      if (suggestions.length) {
+        e.preventDefault();
+        activeIdx = (activeIdx + 1) % suggestions.length;
+        renderSuggestions();
+      }
+    } else if (e.key === 'ArrowUp') {
+      if (suggestions.length) {
+        e.preventDefault();
+        activeIdx = activeIdx <= 0 ? suggestions.length - 1 : activeIdx - 1;
+        renderSuggestions();
+      }
+    } else if (e.key === 'Tab') {
+      if (suggestions.length) {
+        e.preventDefault();
+        const pickIdx = activeIdx >= 0 ? activeIdx : 0;
+        const s = suggestions[pickIdx];
+        const value = s.type === 'url' ? s.url : s.query;
+        urlInput.value = value;
+        urlInput.setSelectionRange(value.length, value.length);
+        updateSuggestions();
+      }
+    }
+  });
+
+  ipcRenderer.on('nav-state', (_e, s) => {
+    if (!editing) urlInput.value = s.url || '';
+    $('back').disabled = !s.canGoBack;
+    $('forward').disabled = !s.canGoForward;
+  });
+  ipcRenderer.on('focus-url', () => {
+    urlInput.focus();
+    urlInput.select();
+  });
+  ipcRenderer.send('chrome-ready');
+</script>
+</body>
+</html>

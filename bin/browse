@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+URL="${1:-about:blank}"
+SOCK="${TDUB_SOCK:-$HOME/.tdub.sock}"
+if [ ! -S "$SOCK" ]; then
+  echo "browse: tdub socket not found at $SOCK (is tdub running?)" >&2
+  exit 1
+fi
+printf 'browse %s\n' "$URL" | nc -U "$SOCK"

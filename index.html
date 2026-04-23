@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>tdub</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+    body { -webkit-user-select: none; user-select: none; }
+    #term { width: 100%; height: 100%; padding: 6px; box-sizing: border-box; }
+    .xterm { height: 100%; }
+    .xterm .xterm-viewport { background-color: transparent !important; }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "tdub",
+  "version": "0.1.0",
+  "description": "A terminal that can summon a browser.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "electron-rebuild -f -w node-pty || true"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^41.3.0"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0"
+  }
+}
