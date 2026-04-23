@@ -24,6 +24,11 @@ function ptyEnv() {
     ...process.env,
     TERM: 'xterm-256color',
     PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
+    TDUB_BIN: BIN_DIR,
+    // Hijack zsh's rc directory so every zsh spawned inside tdub — including
+    // every tmux pane — re-prepends $TDUB_BIN after the user's rc runs.
+    // Survives macOS path_helper wiping PATH on login shells.
+    ZDOTDIR: path.join(APP_DIR, 'shell', 'zsh'),
   };
 }
 
@@ -197,7 +202,7 @@ function enterBrowser({ pid, url }) {
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
   chromeView.setBackgroundColor('#1b1b1b');
-  chromeView.webContents.loadFile(CHROME_HTML, { query: { id: String(pid) } });
+  chromeView.webContents.loadFile(CHROME_HTML);
 
   browser = { pid: String(pid), view, chromeView, chromeExpandedHeight: 0 };
 
@@ -298,7 +303,6 @@ ipcMain.on('pty-resize', (_e, { cols, rows }) => {
 });
 
 ipcMain.on('tdub-browse', (_e, params) => enterBrowser(params));
-ipcMain.on('tdub-browse-end', (_e) => exitBrowser());
 
 ipcMain.on('chrome-ready', () => {
   if (!browser) return;
@@ -309,9 +313,8 @@ ipcMain.on('chrome-ready', () => {
     try { browser.chromeView.webContents.send('focus-url'); } catch {}
   }
 });
-ipcMain.on('chrome-click', () => { /* no-op */ });
 ipcMain.on('chrome-defocus', () => exitBrowser());
-ipcMain.on('chrome-expand', (_e, _id, height) => {
+ipcMain.on('chrome-expand', (_e, height) => {
   if (!browser) return;
   browser.chromeExpandedHeight = (height && height > CHROME_BAR_HEIGHT) ? height : 0;
   layoutBrowser();
@@ -325,7 +328,7 @@ ipcMain.on('nav-forward', () => {
 ipcMain.on('nav-reload', () => {
   if (browser) browser.view.webContents.reload();
 });
-ipcMain.on('nav-url', (_e, _id, raw) => {
+ipcMain.on('nav-url', (_e, raw) => {
   if (!browser) return;
   const target = normalizeUrl(raw);
   if (!target) return;

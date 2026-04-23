@@ -46,25 +46,22 @@
   <div id="suggestions"></div>
 <script>
   const { ipcRenderer } = require('electron');
-  const ID = new URLSearchParams(location.search).get('id');
   const $ = (id) => document.getElementById(id);
   const urlInput = $('url');
   const suggEl = $('suggestions');
-
-  document.addEventListener('mousedown', () => ipcRenderer.send('chrome-click'), true);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && e.altKey) {
       e.preventDefault();
       e.stopPropagation();
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-      ipcRenderer.send('chrome-defocus', ID);
+      ipcRenderer.send('chrome-defocus');
     }
   }, true);
 
-  $('back').addEventListener('click', () => ipcRenderer.send('nav-back', ID));
-  $('forward').addEventListener('click', () => ipcRenderer.send('nav-forward', ID));
-  $('reload').addEventListener('click', () => ipcRenderer.send('nav-reload', ID));
+  $('back').addEventListener('click', () => ipcRenderer.send('nav-back'));
+  $('forward').addEventListener('click', () => ipcRenderer.send('nav-forward'));
+  $('reload').addEventListener('click', () => ipcRenderer.send('nav-reload'));
 
   let suggestions = [];
   let activeIdx = -1;
@@ -78,11 +75,11 @@
 
   function reportHeight() {
     if (!suggEl.classList.contains('visible')) {
-      ipcRenderer.send('chrome-expand', ID, 0);
+      ipcRenderer.send('chrome-expand', 0);
       return;
     }
     const rect = suggEl.getBoundingClientRect();
-    ipcRenderer.send('chrome-expand', ID, Math.ceil(rect.bottom + 4));
+    ipcRenderer.send('chrome-expand', Math.ceil(rect.bottom + 4));
   }
 
   function renderSuggestions() {
@@ -140,7 +137,7 @@
     urlInput.value = value;
     closeSuggestions();
     urlInput.blur();
-    ipcRenderer.send('nav-url', ID, value);
+    ipcRenderer.send('nav-url', value);
   }
 
   urlInput.addEventListener('focus', () => {
@@ -164,7 +161,7 @@
         if (v) {
           closeSuggestions();
           urlInput.blur();
-          ipcRenderer.send('nav-url', ID, v);
+          ipcRenderer.send('nav-url', v);
         }
       }
     } else if (e.key === 'Escape') {
@@ -204,7 +201,7 @@
     urlInput.focus();
     urlInput.select();
   });
-  ipcRenderer.send('chrome-ready', ID);
+  ipcRenderer.send('chrome-ready');
 </script>
 </body>
 </html>

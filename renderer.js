@@ -76,46 +76,38 @@ window.addEventListener('beforeinput', (e) => {
   if (e.isComposing || (e.inputType && e.inputType.startsWith('insertComposi'))) swallow(e);
 }, true);
 
-// Private OSC 1983 = tdub-specific commands. Payload subcommands:
-//   tdub-browse;pid=X;url=U      — flip the window into browser mode
-//   tdub-browse-end;pid=X        — flip back to terminal mode
+// Private OSC 1983 = tdub-specific commands. Payload:
+//   tdub-browse;pid=X;url=U   — flip the window into browser mode
 // The URL is always the last param so it can contain `;` and `=` raw.
 term.parser.registerOscHandler(1983, (data) => {
   const semi = data.indexOf(';');
   const kind = semi === -1 ? data : data.slice(0, semi);
   const rest = semi === -1 ? '' : data.slice(semi + 1);
 
-  if (kind === 'tdub-browse') {
-    const params = {};
-    let urlPart = '';
-    let remaining = rest;
-    while (remaining.length) {
-      const i = remaining.indexOf(';');
-      const chunk = i === -1 ? remaining : remaining.slice(0, i);
-      remaining = i === -1 ? '' : remaining.slice(i + 1);
-      const eq = chunk.indexOf('=');
-      if (eq === -1) continue;
-      const key = chunk.slice(0, eq);
-      const val = chunk.slice(eq + 1);
-      if (key === 'url') {
-        urlPart = i === -1 ? val : val + ';' + remaining;
-        break;
-      }
-      params[key] = val;
+  if (kind !== 'tdub-browse') return false;
+
+  const params = {};
+  let urlPart = '';
+  let remaining = rest;
+  while (remaining.length) {
+    const i = remaining.indexOf(';');
+    const chunk = i === -1 ? remaining : remaining.slice(0, i);
+    remaining = i === -1 ? '' : remaining.slice(i + 1);
+    const eq = chunk.indexOf('=');
+    if (eq === -1) continue;
+    const key = chunk.slice(0, eq);
+    const val = chunk.slice(eq + 1);
+    if (key === 'url') {
+      urlPart = i === -1 ? val : val + ';' + remaining;
+      break;
     }
-    ipcRenderer.send('tdub-browse', {
-      pid: String(params.pid || ''),
-      url: urlPart || 'about:blank',
-    });
-    return true;
+    params[key] = val;
   }
-
-  if (kind === 'tdub-browse-end') {
-    ipcRenderer.send('tdub-browse-end');
-    return true;
-  }
-
-  return false;
+  ipcRenderer.send('tdub-browse', {
+    pid: String(params.pid || ''),
+    url: urlPart || 'about:blank',
+  });
+  return true;
 });
 
 function reportSize() {
