@@ -13,6 +13,7 @@ const WORKSPACE_BAR_HEIGHT = 22;
 
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'tdub');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+const DEFAULTS_PATH = path.join(CONFIG_DIR, 'defaults.json');
 
 const DEFAULT_BINDINGS = {
   // Pane ops
@@ -56,10 +57,15 @@ const DEFAULT_PANES = {
   border: { inactive: '#2a2a2a', focused: '#4a9eff', width: 1 },
 };
 
+const DEFAULT_WORKSPACES = {
+  wrap: true, // nextWorkspace at the last wraps to first; prev at first wraps to last
+};
+
 let bindings = DEFAULT_BINDINGS;
 let termConfig = DEFAULT_TERMINAL;
 let windowConfig = DEFAULT_WINDOW;
 let paneConfig = DEFAULT_PANES;
+let workspaceConfig = DEFAULT_WORKSPACES;
 
 function parseChord(str) {
   const parts = String(str).split('+').map((s) => s.trim()).filter(Boolean);
@@ -138,6 +144,7 @@ function loadConfigFromDisk() {
   termConfig = mergeDeep(DEFAULT_TERMINAL, parsed && parsed.terminal);
   windowConfig = mergeDeep(DEFAULT_WINDOW, parsed && parsed.window);
   paneConfig = mergeDeep(DEFAULT_PANES, parsed && parsed.panes);
+  workspaceConfig = mergeDeep(DEFAULT_WORKSPACES, parsed && parsed.workspaces);
 
   for (const world of worlds.values()) pushRuntimeConfig(world);
 }
@@ -153,16 +160,59 @@ function pushRuntimeConfig(world) {
   });
 }
 
+const CONFIG_REFERENCE = {
+  chord_syntax: 'Modifier+Modifier+Key. Modifiers: Cmd, Alt (aka Option), Shift, Ctrl. Key: single char (a-z, 0-9, =, -) or named (Enter, Escape, Tab, Space, Backspace, Delete, Home, End, PageUp, PageDown, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, F1..F12). Case-insensitive. Each action is a list of chords; any chord matches.',
+  actions: {
+    newTerminal:    'Split the focused pane with a new shell.',
+    closePane:      'Close the focused pane (no-op on the last pane in a workspace).',
+    splitRight:     'Explicit horizontal split (new pane to the right).',
+    splitDown:      'Explicit vertical split (new pane below).',
+    navLeft:        'Move focus to the adjacent pane on the left.',
+    navDown:        'Move focus to the adjacent pane below.',
+    navUp:          'Move focus to the adjacent pane above.',
+    navRight:       'Move focus to the adjacent pane on the right.',
+    equalize:       'Reset all splits in the active workspace to 50/50.',
+    newWorkspace:   'Create a new workspace with a fresh terminal.',
+    closeWorkspace: 'Close the active workspace; closes the window if it was the last.',
+    nextWorkspace:  'Switch to the next workspace.',
+    prevWorkspace:  'Switch to the previous workspace.',
+    newWindow:      'Open another Electron window.',
+    closeWindow:    'Close the current Electron window.',
+    zoomIn:         'Increase font size in a terminal pane, or page zoom in a browser pane.',
+    zoomOut:        'Decrease font size / browser zoom.',
+    zoomReset:      'Reset font size / browser zoom to 1.',
+    engage:         'Give keyboard focus to a browser pane (type into the page).',
+    disengage:      'Return focus from a browser pane; a second press converts it back to a terminal.',
+  },
+};
+
+// Regenerate the read-only defaults file on every launch. Users can diff
+// this against their config.json or copy lines from it to override.
+function writeDefaultsFile() {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    const content = {
+      _comment: 'tdub defaults — regenerated every launch, do not edit. Copy lines from here into config.json to override.',
+      _reference: CONFIG_REFERENCE,
+      keybindings: DEFAULT_BINDINGS,
+      terminal: DEFAULT_TERMINAL,
+      window: DEFAULT_WINDOW,
+      panes: DEFAULT_PANES,
+      workspaces: DEFAULT_WORKSPACES,
+    };
+    fs.writeFileSync(DEFAULTS_PATH, JSON.stringify(content, null, 2));
+  } catch (e) { console.warn('[tdub] writeDefaultsFile:', e.message); }
+}
+
+// User's config.json — seeded as a minimal stub. Anything not overridden
+// falls back to the values in defaults.json / DEFAULT_* constants.
 function ensureConfigFile() {
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
     if (!fs.existsSync(CONFIG_PATH)) {
       const seed = {
-        _comment: 'Edit below. Chord syntax: "Cmd+T", "Cmd+Alt+Shift+N". Reload on save.',
-        keybindings: DEFAULT_BINDINGS,
-        terminal: DEFAULT_TERMINAL,
-        window: DEFAULT_WINDOW,
-        panes: DEFAULT_PANES,
+        _comment: 'Your overrides. Anything missing falls back to defaults.json (same dir). Reload on save.',
+        keybindings: {},
       };
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(seed, null, 2));
     }
@@ -632,7 +682,12 @@ function activateWorkspace(world, idx) {
 function cycleWorkspace(world, dir) {
   if (world.workspaces.length <= 1) return;
   const n = world.workspaces.length;
-  const idx = (world.activeIdx + dir + n) % n;
+  let idx = world.activeIdx + dir;
+  if (workspaceConfig.wrap) {
+    idx = (idx + n) % n;
+  } else {
+    if (idx < 0 || idx >= n) return;
+  }
   activateWorkspace(world, idx);
 }
 
@@ -993,6 +1048,7 @@ ipcMain.on('nav-url', (e, raw) => {
 ipcMain.handle('omnibox-suggest', (_e, query) => combinedSuggest(query || ''));
 
 app.whenReady().then(() => {
+  writeDefaultsFile();
   ensureConfigFile();
   loadConfigFromDisk();
   watchConfig();

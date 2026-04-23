@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# config — open tdub's config.json in $EDITOR. Seeds the file with defaults
-# if it doesn't exist yet. Tdub watches the file and reloads on save, so
-# changes take effect immediately.
+# config — open tdub's config.json in $EDITOR. config.json holds your
+# personal overrides; defaults.json (same dir, regenerated every launch)
+# is the read-only reference with every setting and its default value.
 set -e
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tdub"
 CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -9,31 +9,8 @@ mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_FILE" ]; then
   cat > "$CONFIG_FILE" <<'JSON'
 {
-  "_comment": "Edit below. Chord syntax: \"Cmd+T\", \"Cmd+Alt+Shift+N\". Reload on save.",
-  "keybindings": {
-    "newTerminal":  ["Cmd+T"],
-    "closePane":    ["Cmd+W"],
-    "closeWindow":  ["Cmd+Shift+W"],
-    "newWindow":    ["Cmd+N"],
-    "splitRight":   ["Cmd+Alt+N"],
-    "splitDown":    ["Cmd+Alt+Shift+N"],
-    "navLeft":      ["Cmd+H"],
-    "navDown":      ["Cmd+J"],
-    "navUp":        ["Cmd+K"],
-    "navRight":     ["Cmd+L"],
-    "equalize":     ["Cmd+="],
-    "engage":       ["Cmd+Enter"],
-    "disengage":    ["Cmd+Escape"]
-  },
-  "terminal": {
-    "fontFamily": "ui-monospace, Menlo, monospace",
-    "fontSize": 13,
-    "cursorBlink": true,
-    "theme": { "background": "#000000", "foreground": "#e0e0e0" },
-    "shell": null
-  },
-  "window": { "width": 1000, "height": 650 },
-  "panes": { "border": { "inactive": "#2a2a2a", "focused": "#4a9eff", "width": 1 } }
+  "_comment": "Your overrides. Anything missing falls back to defaults.json (same dir). Reload on save.",
+  "keybindings": {}
 }
 JSON
 fi
