@@ -72,6 +72,10 @@ const DEFAULT_BINDINGS = {
   navDown:          ['Cmd+J'],
   navUp:            ['Cmd+K'],
   navRight:         ['Cmd+L'],
+  swapLeft:         ['Alt+Shift+J'],
+  swapDown:         ['Alt+Shift+K'],
+  swapUp:           ['Alt+Shift+I'],
+  swapRight:        ['Alt+Shift+L'],
   equalize:         ['Cmd+Alt+='],
   // Workspace ops (named "windows" in tmux/smux terms — a tab of panes)
   newWorkspace:     ['Cmd+T'],
@@ -331,6 +335,10 @@ const CONFIG_REFERENCE = {
     navDown:        'Move focus to the adjacent pane below.',
     navUp:          'Move focus to the adjacent pane above.',
     navRight:       'Move focus to the adjacent pane on the right.',
+    swapLeft:       'Swap the focused pane with the spatial neighbor to the left.',
+    swapDown:       'Swap the focused pane with the spatial neighbor below.',
+    swapUp:         'Swap the focused pane with the spatial neighbor above.',
+    swapRight:      'Swap the focused pane with the spatial neighbor to the right.',
     equalize:       'Reset all splits in the active workspace to 50/50.',
     newWorkspace:   'Create a new workspace with a fresh terminal.',
     closeWorkspace: 'Close the active workspace; closes the window if it was the last.',
@@ -761,11 +769,9 @@ function allLeaves(node, out = []) {
   return out;
 }
 
-function gotoDir(world, dir) {
-  const ws = activeWs(world);
-  if (!ws) return;
-  const cur = ws.panes.get(ws.focusedPaneId);
-  if (!cur) return;
+function findNeighbor(ws, paneId, dir) {
+  const cur = ws.panes.get(paneId);
+  if (!cur) return null;
   const leaves = allLeaves(ws.root).map((l) => ws.panes.get(l.paneId)).filter(Boolean);
   const cr = cur.rect;
   const cmid = { x: cr.x + cr.w / 2, y: cr.y + cr.h / 2 };
@@ -785,7 +791,35 @@ function gotoDir(world, dir) {
     const score = dist + perp;
     if (score < bestScore) { bestScore = score; best = p; }
   }
-  if (best) { ws.focusedPaneId = best.id; pushFocus(world); }
+  return best ? best.id : null;
+}
+
+function gotoDir(world, dir) {
+  const ws = activeWs(world);
+  if (!ws) return;
+  const neighborId = findNeighbor(ws, ws.focusedPaneId, dir);
+  if (neighborId) { ws.focusedPaneId = neighborId; pushFocus(world); }
+}
+
+function swapDir(world, dir) {
+  const ws = activeWs(world);
+  if (!ws) return;
+  const focused = ws.focusedPaneId;
+  const neighborId = findNeighbor(ws, focused, dir);
+  if (!neighborId) return;
+  swapLeaves(ws, focused, neighborId);
+  // Focus stays with the pane that moved (now in the neighbor's old slot).
+  layoutWorld(world);
+  pushFocus(world);
+}
+
+function swapLeaves(ws, a, b) {
+  if (!a || !b || a === b) return;
+  const la = findLeafParent(ws.root, a);
+  const lb = findLeafParent(ws.root, b);
+  if (!la || !lb) return;
+  la.leaf.paneId = b;
+  lb.leaf.paneId = a;
 }
 
 function pushFocus(world) {
@@ -1079,6 +1113,10 @@ function dispatchAction(world, action) {
     case 'navDown':        gotoDir(world, 'down'); return true;
     case 'navUp':          gotoDir(world, 'up'); return true;
     case 'navRight':       gotoDir(world, 'right'); return true;
+    case 'swapLeft':       swapDir(world, 'left'); return true;
+    case 'swapDown':       swapDir(world, 'down'); return true;
+    case 'swapUp':         swapDir(world, 'up'); return true;
+    case 'swapRight':      swapDir(world, 'right'); return true;
     case 'equalize':       if (ws) { equalize(ws.root); layoutWorld(world); } return true;
     case 'zoomIn':         applyZoom(world, +1); return true;
     case 'zoomOut':        applyZoom(world, -1); return true;
@@ -1338,6 +1376,7 @@ function findPaneByChromeWc(wc) {
   }
   return null;
 }
+
 
 ipcMain.on('chrome-ready', (e) => {
   const found = findPaneByChromeWc(e.sender);
