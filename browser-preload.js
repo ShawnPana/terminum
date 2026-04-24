@@ -58,8 +58,34 @@
         { get() { return fakeUAD; }, configurable: true });
     } catch {}
 
-    // Google's "secure browser" check also looks at window.chrome.runtime.
+    // Google's "secure browser" check probes the shape of window.chrome.
+    // Real Chrome has at least {app, csi, loadTimes, runtime}. An embedded
+    // webview typically has none of these — missing any of them is the
+    // main tell that fires the "browser or app may not be secure" screen.
     if (!window.chrome) window.chrome = {};
+    if (!window.chrome.app) {
+      window.chrome.app = {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+      };
+    }
+    if (!window.chrome.csi) {
+      window.chrome.csi = function () {
+        return { onloadT: Date.now(), pageT: 0, startE: Date.now(), tran: 15 };
+      };
+    }
+    if (!window.chrome.loadTimes) {
+      window.chrome.loadTimes = function () {
+        return {
+          commitLoadTime: 0, connectionInfo: 'h2', finishDocumentLoadTime: 0,
+          finishLoadTime: 0, firstPaintAfterLoadTime: 0, firstPaintTime: 0,
+          navigationType: 'Other', npnNegotiatedProtocol: 'h2', requestTime: 0,
+          startLoadTime: 0, wasAlternateProtocolAvailable: false,
+          wasFetchedViaSpdy: true, wasNpnNegotiated: true,
+        };
+      };
+    }
     if (!window.chrome.runtime) {
       window.chrome.runtime = {
         OnInstalledReason: {},
@@ -67,5 +93,14 @@
         PlatformOs: { MAC: 'mac' },
       };
     }
+
+    // Real Chrome on macOS reports at least ["en-US", "en"]; Electron
+    // defaults to a single entry which is a minor but documented tell.
+    try {
+      if (!Array.isArray(navigator.languages) || navigator.languages.length < 2) {
+        Object.defineProperty(Object.getPrototypeOf(navigator), 'languages',
+          { get() { return ['en-US', 'en']; }, configurable: true });
+      }
+    } catch {}
   } catch (_e) { /* no-op */ }
 })();
