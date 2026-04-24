@@ -52,6 +52,40 @@ const BROWSER_PRELOAD = path.join(APP_DIR, 'browser-preload.js');
 const CHROME_BAR_HEIGHT = 28;
 const WORKSPACE_BAR_BASE_HEIGHT = 22;
 
+// tmux backend: when available, every terminal pane's shell is spawned
+// inside a tmux server so shells outlive ophanim. Lazy-initialized after
+// app.whenReady so we can read `app.getPath('userData')`.
+const tmuxBackendLib = require('./tmux-backend');
+let tmuxBackend = null;
+function initTmuxBackend() {
+  if (tmuxBackend) return tmuxBackend;
+  tmuxBackend = tmuxBackendLib.createBackend({
+    unpackedDir: UNPACKED_DIR,
+    userDataDir: app.getPath('userData'),
+    getOverridePath: () => (termConfig && termConfig.tmuxPath) || '',
+  });
+  return tmuxBackend;
+}
+
+// Session store: snapshot the layout (window bounds, workspaces, split
+// tree, browser URLs/history) so that quit+relaunch comes back in the
+// same shape. Lazy-initialized same as tmux backend.
+const sessionStoreLib = require('./session-store');
+let sessionStore = null;
+function initSessionStore() {
+  if (sessionStore) return sessionStore;
+  sessionStore = sessionStoreLib.createStore({
+    userDataDir: app.getPath('userData'),
+    getWorlds: () => worlds,
+  });
+  return sessionStore;
+}
+// Trivial indirect so callers anywhere don't need to remember to
+// init — they just fire-and-forget.
+function markSessionDirty() {
+  if (sessionStore) sessionStore.scheduleDirtyWrite();
+}
+
 function currentBarHeight(world) {
   const fs = Math.max(6, Math.min(72, (termConfig && termConfig.fontSize || 13) + (world.zoomDelta || 0)));
   // Scale bar height proportionally to terminal font size (min 22px).
@@ -101,6 +135,10 @@ const DEFAULT_TERMINAL = {
   cursorBlink: true,
   theme: { background: '#000000', foreground: '#e0e0e0' },
   shell: null,
+  // Override for the bundled tmux binary. Empty / null = use the bundled
+  // copy at build/vendor/tmux-<arch>/tmux. Set to a path (e.g.
+  // "/opt/homebrew/bin/tmux") to use your own.
+  tmuxPath: null,
 };
 
 const DEFAULT_WINDOW = { width: 1000, height: 650 };
@@ -288,6 +326,8 @@ function loadConfigFromDisk() {
   }
 
   termConfig = mergeDeep(DEFAULT_TERMINAL, parsed && parsed.terminal);
+  // Let a `terminal.tmuxPath` edit take effect without restart.
+  if (tmuxBackend) tmuxBackend.invalidatePathCache();
   windowConfig = mergeDeep(DEFAULT_WINDOW, parsed && parsed.window);
   paneConfig = mergeDeep(DEFAULT_PANES, parsed && parsed.panes);
   workspaceConfig = mergeDeep(DEFAULT_WORKSPACES, parsed && parsed.workspaces);
@@ -461,14 +501,12 @@ function resolveShell() {
 }
 
 function spawnPty(world, paneId, cols = 100, rows = 30) {
-  const shell = resolveShell();
-  const integ = shellIntegration(shell);
-  const p = pty.spawn(shell, integ.args, {
-    name: 'xterm-256color',
-    cols, rows,
-    cwd: os.homedir(),
-    env: ptyEnv(integ.env),
-  });
+  const backend = initTmuxBackend();
+  if (backend.available()) return spawnPtyViaTmux(world, paneId, cols, rows);
+  return spawnPtyDirect(world, paneId, cols, rows);
+}
+
+function wirePtyEvents(world, paneId, p) {
   p.onData((data) => {
     if (!world.win.isDestroyed() && !world.termView.webContents.isDestroyed()) {
       world.termView.webContents.send('pty-data', { paneId, data });
@@ -480,6 +518,62 @@ function spawnPty(world, paneId, cols = 100, rows = 30) {
     if (!found || found.pane.kind !== 'term' || found.pane.pty !== p) return;
     closePane(world, paneId);
   });
+}
+
+function spawnPtyDirect(world, paneId, cols, rows) {
+  const shell = resolveShell();
+  const integ = shellIntegration(shell);
+  const p = pty.spawn(shell, integ.args, {
+    name: 'xterm-256color',
+    cols, rows,
+    cwd: os.homedir(),
+    env: ptyEnv(integ.env),
+  });
+  wirePtyEvents(world, paneId, p);
+  return p;
+}
+
+// Build a single shell-command string for `tmux new-session` (args are
+// joined into one command by tmux and run via /bin/sh -c).
+function shQuote(s) { return `'${String(s).replace(/'/g, "'\\''")}'`; }
+function buildTmuxShellCommand() {
+  const shell = resolveShell();
+  const integ = shellIntegration(shell);
+  if (!integ.args.length) return shQuote(shell);
+  return [shell, ...integ.args].map(shQuote).join(' ');
+}
+
+function spawnPtyViaTmux(world, paneId, cols, rows) {
+  const backend = tmuxBackend;
+  const shell = resolveShell();
+  const integ = shellIntegration(shell);
+  const env = ptyEnv(integ.env);
+  // Session naming is opaque — `term-${paneId}`. If an earlier ophanim
+  // launch left a session with this name, attach to that; otherwise make
+  // a fresh one. This is what makes session restore transparent.
+  if (!backend.hasSession(paneId)) {
+    const cmd = buildTmuxShellCommand();
+    try {
+      backend.createSession(paneId, {
+        cwd: env.HOME || os.homedir(),
+        env,
+        // createSession appends this after session flags; tmux joins
+        // everything after `-s <name>` as the command line.
+        shellCommand: cmd,
+      });
+    } catch (e) {
+      console.warn('[ophanim] tmux createSession failed, falling back:', e.message);
+      return spawnPtyDirect(world, paneId, cols, rows);
+    }
+  }
+  let p;
+  try {
+    p = backend.attach(paneId, { cols, rows, env });
+  } catch (e) {
+    console.warn('[ophanim] tmux attach failed, falling back:', e.message);
+    return spawnPtyDirect(world, paneId, cols, rows);
+  }
+  wirePtyEvents(world, paneId, p);
   return p;
 }
 
@@ -688,7 +782,16 @@ function addTermPane(world, ws, paneId) {
 
 function destroyPaneResources(world, pane) {
   if (pane.kind === 'term') {
+    // Kill the attach client (our local pty.spawn of `tmux attach`),
+    // THEN kill the tmux session itself so the shell and its children
+    // actually go away. Without the killSession call the shell would
+    // keep running orphaned in the tmux server forever. This path runs
+    // only on explicit pane close — NOT on browser conversion, where
+    // we want to preserve the session for a future convert-back.
     try { pane.pty && pane.pty.kill(); } catch {}
+    if (tmuxBackend && tmuxBackend.available()) {
+      try { tmuxBackend.killSession(pane.id); } catch {}
+    }
   } else if (pane.kind === 'browser') {
     try { world.win.contentView.removeChildView(pane.chromeView); } catch {}
     try { pane.chromeView.webContents.close(); } catch {}
@@ -724,6 +827,7 @@ function split(world, paneId, dir) {
   ws.focusedPaneId = newId;
   layoutWorld(world);
   pushFocus(world);
+  markSessionDirty();
 }
 
 function closePane(world, paneId) {
@@ -748,6 +852,7 @@ function closePane(world, paneId) {
   if (anyLeaf) ws.focusedPaneId = anyLeaf.paneId;
   layoutWorld(world);
   pushFocus(world);
+  markSessionDirty();
 }
 
 function replaceNode(parent, oldNode, newNode, ws) {
@@ -798,7 +903,7 @@ function gotoDir(world, dir) {
   const ws = activeWs(world);
   if (!ws) return;
   const neighborId = findNeighbor(ws, ws.focusedPaneId, dir);
-  if (neighborId) { ws.focusedPaneId = neighborId; pushFocus(world); }
+  if (neighborId) { ws.focusedPaneId = neighborId; pushFocus(world); markSessionDirty(); }
 }
 
 function swapDir(world, dir) {
@@ -811,6 +916,7 @@ function swapDir(world, dir) {
   // Focus stays with the pane that moved (now in the neighbor's old slot).
   layoutWorld(world);
   pushFocus(world);
+  markSessionDirty();
 }
 
 function swapLeaves(ws, a, b) {
@@ -881,6 +987,7 @@ function applyZoom(world, step) {
   // Bar height is derived from zoom; re-layout so panes shrink/grow to
   // leave the right room above the bar.
   layoutWorld(world);
+  markSessionDirty();
 }
 
 // ---------- workspaces ----------
@@ -907,6 +1014,7 @@ function newWorkspace(world, name) {
   world.workspaces.push(ws);
   addTermPane(world, ws, paneId);
   activateWorkspace(world, world.workspaces.length - 1);
+  markSessionDirty();
 }
 
 function closeWorkspace(world, idx) {
@@ -920,6 +1028,7 @@ function closeWorkspace(world, idx) {
   }
   const newActive = Math.min(idx, world.workspaces.length - 1);
   activateWorkspace(world, newActive);
+  markSessionDirty();
 }
 
 function activateWorkspace(world, idx) {
@@ -928,6 +1037,7 @@ function activateWorkspace(world, idx) {
   layoutWorld(world);
   pushFocus(world);
   pushWorkspaces(world);
+  markSessionDirty();
 }
 
 function cycleWorkspace(world, dir) {
@@ -944,12 +1054,21 @@ function cycleWorkspace(world, dir) {
 
 // ---------- browser pane conversion ----------
 
-function convertToBrowser(world, paneId, url, pid) {
+function convertToBrowser(world, paneId, url, pid, opts) {
   const ws = activeWs(world);
   if (!ws) return;
   const pane = ws.panes.get(paneId);
   if (!pane || pane.kind !== 'term') return;
   const target = normalizeUrl(url);
+  const restoreEntries = opts && Array.isArray(opts.restoreEntries) ? opts.restoreEntries : null;
+  const restoreIndex   = opts && typeof opts.restoreIndex === 'number' ? opts.restoreIndex : -1;
+  const restoreZoom    = opts && typeof opts.zoomFactor  === 'number' ? opts.zoomFactor : null;
+  const restoreEngaged = opts && opts.engaged;
+  // Only kill the attach-client PTY (our `tmux attach` spawn). With the
+  // tmux backend this leaves the tmux session alive so the shell keeps
+  // running and its state is preserved if the pane is ever converted
+  // back to a terminal. With direct-spawn fallback it's the same pty.kill
+  // we did before.
   try { pane.pty && pane.pty.kill(); } catch {}
   if (world.rendererReady) {
     world.termView.webContents.send('pane-change-kind', { paneId, kind: 'browser' });
@@ -995,6 +1114,7 @@ function convertToBrowser(world, paneId, url, pid) {
   const onStateChange = () => {
     pushNavState();
     try { recordVisit(view.webContents.getURL(), view.webContents.getTitle()); } catch {}
+    markSessionDirty();
   };
   view.webContents.on('did-navigate', onStateChange);
   view.webContents.on('did-navigate-in-page', onStateChange);
@@ -1050,7 +1170,47 @@ function convertToBrowser(world, paneId, url, pid) {
   world.win.contentView.addChildView(view);
   world.win.contentView.addChildView(chromeView);
   layoutWorld(world);
-  view.webContents.loadURL(target);
+
+  // Restore path: rebuild the back/forward stack (including pageState —
+  // scroll position and form fields) from snapshot. Skip the plain
+  // loadURL in that case; navigationHistory.restore() handles it.
+  if (restoreEntries && restoreEntries.length > 0) {
+    try {
+      const nh = view.webContents.navigationHistory;
+      if (nh && typeof nh.restore === 'function') {
+        Promise.resolve(nh.restore({
+          entries: restoreEntries,
+          index: restoreIndex >= 0 ? restoreIndex : restoreEntries.length - 1,
+        })).catch((e) => {
+          console.warn('[ophanim] navigationHistory.restore failed:', e.message);
+          // Fall back to a plain loadURL on the last saved URL.
+          const last = restoreEntries[restoreEntries.length - 1];
+          if (last && last.url) view.webContents.loadURL(last.url);
+        });
+      } else {
+        const last = restoreEntries[restoreEntries.length - 1];
+        view.webContents.loadURL(last.url || target);
+      }
+    } catch (e) {
+      console.warn('[ophanim] restore entries exception:', e.message);
+      view.webContents.loadURL(target);
+    }
+  } else {
+    view.webContents.loadURL(target);
+  }
+
+  if (restoreZoom && restoreZoom !== 1) {
+    bp.zoomFactor = restoreZoom;
+    try { view.webContents.setZoomFactor(restoreZoom); } catch {}
+    try { chromeView.webContents.send('chrome-zoom', restoreZoom); } catch {}
+  }
+  if (restoreEngaged) {
+    bp.engaged = true;
+    updateBrowserBorder(bp);
+    // Don't transfer keyboard focus on restore — focus belongs to whoever
+    // the snapshot said was focused in the workspace, set by pushFocus.
+  }
+  markSessionDirty();
 }
 
 function convertToTerminal(world, paneId) {
@@ -1076,6 +1236,7 @@ function convertToTerminal(world, paneId) {
   termPane.pty = spawnPty(world, paneId);
   layoutWorld(world);
   pushFocus(world);
+  markSessionDirty();
 }
 
 function handleBrowserPaneInput(world, pane, event, input) {
@@ -1167,10 +1328,115 @@ function handleNavChord(world, input) {
 
 // ---------- window lifecycle ----------
 
-function newWindow() {
-  const win = new BrowserWindow({
+// Clamp saved bounds to the current screen layout so a display change
+// (external monitor disconnected) doesn't bring the window up offscreen.
+function clampToDisplay(saved) {
+  if (!saved || typeof saved !== 'object') return null;
+  try {
+    const { screen } = require('electron');
+    const work = screen.getPrimaryDisplay().workArea;
+    const width  = Math.max(300, Math.min(saved.width  || work.width,  work.width));
+    const height = Math.max(200, Math.min(saved.height || work.height, work.height));
+    const x = Math.max(work.x, Math.min(saved.x != null ? saved.x : work.x,
+                                        work.x + work.width  - width));
+    const y = Math.max(work.y, Math.min(saved.y != null ? saved.y : work.y,
+                                        work.y + work.height - height));
+    return { x, y, width, height };
+  } catch { return null; }
+}
+
+// Build a runtime workspace from a snapshot — fresh paneIds, reattached
+// tmux sessions for term leaves, navigationHistory.restore() for browser
+// leaves.
+function restoreWorkspace(world, wsSnap) {
+  const ws = {
+    id: newWsId(),
+    name: wsSnap.name || 'ws1',
+    root: null,
+    focusedPaneId: null,
+    panes: new Map(),
+  };
+  world.workspaces.push(ws);
+
+  const paneIdByLeafIdx = [];
+  function buildNode(node) {
+    if (!node) return null;
+    if (node.kind === 'leaf') {
+      const paneId = newPaneId();
+      paneIdByLeafIdx[node.leafIdx] = paneId;
+      return { kind: 'leaf', paneId };
+    }
+    return {
+      kind: 'split',
+      dir: node.dir,
+      ratio: node.ratio,
+      a: buildNode(node.a),
+      b: buildNode(node.b),
+    };
+  }
+  ws.root = buildNode(wsSnap.root);
+  if (!ws.root) {
+    // Empty tree; seed with a default term pane so the workspace is valid.
+    const pid = newPaneId();
+    ws.root = { kind: 'leaf', paneId: pid };
+    ws.focusedPaneId = pid;
+    addTermPane(world, ws, pid);
+    return;
+  }
+
+  const focusLeafIdx = typeof wsSnap.focusedLeafIdx === 'number' ? wsSnap.focusedLeafIdx : 0;
+  ws.focusedPaneId = paneIdByLeafIdx[focusLeafIdx] || paneIdByLeafIdx[0];
+
+  // Now rehydrate each leaf. The order here doesn't matter for correctness
+  // (panes register by id in ws.panes), but mirror the leaves array order
+  // so focusedPaneId resolves to something real by the time we push focus.
+  const leaves = Array.isArray(wsSnap.leaves) ? wsSnap.leaves : [];
+  for (let i = 0; i < leaves.length; i++) {
+    const leaf = leaves[i] || { kind: 'term' };
+    const paneId = paneIdByLeafIdx[i];
+    if (!paneId) continue;
+    if (leaf.kind === 'browser') {
+      // Restore through the standard convertToBrowser path. We need a term
+      // pane slot first so it has something to replace — addTermPane then
+      // convertToBrowser, same flow as an interactive `browse <url>`. The
+      // transient term pane's tmux session is created then torn down by
+      // convertToBrowser. Acceptable churn for a clean one-pass restore.
+      addTermPane(world, ws, paneId);
+      const startUrl = (leaf.history && leaf.history[leaf.historyIndex]
+                        && leaf.history[leaf.historyIndex].url) || 'about:blank';
+      convertToBrowser(world, paneId, startUrl, null, {
+        restoreEntries: leaf.history,
+        restoreIndex: leaf.historyIndex,
+        zoomFactor: leaf.zoomFactor,
+        engaged: leaf.engaged,
+      });
+    } else if (leaf.kind === 'config') {
+      addTermPane(world, ws, paneId);
+      // convertToConfig is called via its OSC path in normal flow; we can
+      // call it directly here. It reuses the term-slot machinery same as
+      // the interactive path.
+      try { convertToConfig(world, paneId); } catch (e) {
+        console.warn('[ophanim] restore convertToConfig failed:', e.message);
+      }
+    } else {
+      // Term — addTermPane will spawn through spawnPty, which in tmux mode
+      // will hasSession() → attach to the surviving tmux session if it's
+      // still there, or create a fresh one in the same slot if not.
+      addTermPane(world, ws, paneId);
+    }
+  }
+}
+
+function newWindow(snapshot) {
+  // snapshot is an optional element from sessions.json's `windows` array.
+  // When present, build bounds/workspaces/panes from it; otherwise fall
+  // back to the default seed (one ws, one term pane).
+  const bounds = clampToDisplay(snapshot && snapshot.bounds) || {
     width: windowConfig.width || 1000,
     height: windowConfig.height || 650,
+  };
+  const win = new BrowserWindow({
+    ...bounds,
     title: 'Ophanim',
     backgroundColor: '#000000',
   });
@@ -1189,23 +1455,27 @@ function newWindow() {
   const world = {
     win, termView,
     workspaces: [], activeIdx: 0,
-    rendererReady: false, zoomDelta: 0,
+    rendererReady: false,
+    zoomDelta: (snapshot && typeof snapshot.zoomDelta === 'number') ? snapshot.zoomDelta : 0,
   };
   worlds.set(win.id, world);
 
-  // Seed with one workspace containing one terminal pane.
-  const ws0 = {
-    id: newWsId(),
-    name: 'ws1',
-    root: null,
-    focusedPaneId: null,
-    panes: new Map(),
-  };
-  const paneId = newPaneId();
-  ws0.root = { kind: 'leaf', paneId };
-  ws0.focusedPaneId = paneId;
-  world.workspaces.push(ws0);
-  addTermPane(world, ws0, paneId);
+  if (snapshot && Array.isArray(snapshot.workspaces) && snapshot.workspaces.length) {
+    for (const wsSnap of snapshot.workspaces) restoreWorkspace(world, wsSnap);
+    world.activeIdx = Math.max(0, Math.min(
+      snapshot.activeWsIdx || 0, world.workspaces.length - 1));
+  } else {
+    // Default seed: one workspace, one terminal pane.
+    const ws0 = {
+      id: newWsId(), name: 'ws1',
+      root: null, focusedPaneId: null, panes: new Map(),
+    };
+    const paneId = newPaneId();
+    ws0.root = { kind: 'leaf', paneId };
+    ws0.focusedPaneId = paneId;
+    world.workspaces.push(ws0);
+    addTermPane(world, ws0, paneId);
+  }
 
   termView.webContents.on('before-input-event', (event, input) => {
     if (handleNavChord(world, input)) event.preventDefault();
@@ -1220,7 +1490,8 @@ function newWindow() {
     layoutWorld(world);
   };
   win.on('resize', syncTermBounds);
-  win.on('resized', syncTermBounds);
+  win.on('resized', () => { syncTermBounds(); markSessionDirty(); });
+  win.on('move',    () => { markSessionDirty(); });
   win.on('show', syncTermBounds);
   win.on('ready-to-show', syncTermBounds);
   const pollId = setInterval(syncTermBounds, 250);
@@ -1263,7 +1534,17 @@ function newWindow() {
     clearInterval(pollId);
     for (const ws of world.workspaces) {
       for (const p of ws.panes.values()) {
-        if (p.kind === 'term') { try { p.pty && p.pty.kill(); } catch {} }
+        if (p.kind === 'term') {
+          try { p.pty && p.pty.kill(); } catch {}
+          // Kill the backing tmux session unless we're in the quit
+          // path — quit preserves sessions so the next launch can
+          // reattach. Closing an individual window (red X / Cmd+Shift+W)
+          // hits this branch with quitConfirmed=false, and those shells
+          // really should go away.
+          if (!quitConfirmed && tmuxBackend && tmuxBackend.available()) {
+            try { tmuxBackend.killSession(p.id); } catch {}
+          }
+        }
         if (p.kind === 'browser') {
           const n = p.pid ? Number(p.pid) : NaN;
           if (Number.isFinite(n) && n > 0) { try { process.kill(n, 'SIGTERM'); } catch {} }
@@ -1337,7 +1618,11 @@ ipcMain.on('rename-workspace', (e, { idx, name }) => {
   for (const world of worlds.values()) {
     if (world.termView.webContents === e.sender) {
       const ws = world.workspaces[idx];
-      if (ws) { ws.name = String(name || '').slice(0, 32) || ws.name; pushWorkspaces(world); }
+      if (ws) {
+        ws.name = String(name || '').slice(0, 32) || ws.name;
+        pushWorkspaces(world);
+        markSessionDirty();
+      }
       return;
     }
   }
@@ -1447,7 +1732,22 @@ app.whenReady().then(() => {
   loadConfigFromDisk();
   watchConfig();
   loadHistory();
-  newWindow();
+
+  // Init backends before the first newWindow so spawn/attach during
+  // restore hits a ready tmuxBackend (required for hasSession checks).
+  initTmuxBackend();
+  const store = initSessionStore();
+
+  const restored = store.tryRestoreSession();
+  if (restored && Array.isArray(restored.windows) && restored.windows.length) {
+    for (const w of restored.windows) {
+      try { newWindow(w); }
+      catch (e) { console.warn('[ophanim] restore window failed:', e.message); }
+    }
+    if (!worlds.size) newWindow();  // belt-and-braces if every restore threw
+  } else {
+    newWindow();
+  }
 });
 
 // ---------- config pane ----------
@@ -1606,6 +1906,9 @@ app.on('before-quit', (e) => {
   // left to return to. Skip the dialog; they meant it.
   if (windowCount === 0) {
     quitConfirmed = true;
+    // Nothing open — flush anyway so the snapshot reflects "no windows"
+    // and we don't re-restore the previously-closed ones on next launch.
+    if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
     return;
   }
   e.preventDefault();
@@ -1622,6 +1925,9 @@ app.on('before-quit', (e) => {
   });
   if (choice === 0) {
     quitConfirmed = true;
+    // Synchronous snapshot BEFORE windows start closing. Writes
+    // sessions.json with the current layout; next launch restores from it.
+    if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
     app.quit();
   }
 });

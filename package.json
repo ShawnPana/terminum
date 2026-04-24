@@ -31,8 +31,11 @@
       "browser-chrome.html",
       "config-ui.html",
       "index.html",
+      "tmux-backend.js",
+      "session-store.js",
       "bin/**",
       "shell/**",
+      "build/vendor/**",
       "LICENSE",
       "!**/.DS_Store",
       "!**/*.{md,map}",
@@ -43,6 +46,7 @@
     "asarUnpack": [
       "bin/**",
       "shell/**",
+      "build/vendor/**",
       "**/*.node"
     ],
     "mac": {
