@@ -1618,11 +1618,14 @@ ipcMain.on('renderer-ready', (e) => {
       if (lastConfigError) {
         world.termView.webContents.send('config-error', { message: lastConfigError });
       }
+      // Replay pane-add for every pane, not just term — the renderer needs
+      // a host div per pane (browser and config included) so focus/border
+      // CSS can be applied. Without this, panes materialized during restore
+      // (before rendererReady was set) have no host, so `.focused` has
+      // nowhere to attach and the highlight never appears.
       for (const ws of world.workspaces) {
         for (const pane of ws.panes.values()) {
-          if (pane.kind === 'term') {
-            world.termView.webContents.send('pane-add', { paneId: pane.id, kind: 'term' });
-          }
+          world.termView.webContents.send('pane-add', { paneId: pane.id, kind: pane.kind });
         }
       }
       layoutWorld(world);
