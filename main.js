@@ -345,6 +345,15 @@ function loadConfigFromDisk() {
       }
     }
   }
+  // Live-resize open windows so window.width / window.height edits are
+  // visible without relaunching. setSize ignores x/y so the window stays
+  // where the user dragged it.
+  const w = Math.max(300, windowConfig.width  || 1000);
+  const h = Math.max(200, windowConfig.height || 650);
+  for (const world of worlds.values()) {
+    if (world.win.isDestroyed()) continue;
+    try { world.win.setSize(w, h); } catch {}
+  }
 }
 
 function pushBrowserTheme(pane) {
@@ -1457,9 +1466,15 @@ function newWindow(snapshot) {
   // snapshot is an optional element from sessions.json's `windows` array.
   // When present, build bounds/workspaces/panes from it; otherwise fall
   // back to the default seed (one ws, one term pane).
-  const bounds = clampToDisplay(snapshot && snapshot.bounds) || {
-    width: windowConfig.width || 1000,
+  // Size always comes from windowConfig so edits to window.width/height
+  // take effect on the next launch even if the user had dragged the
+  // window to a different size before Save & quit. The saved snapshot
+  // still contributes x/y so the window reopens where it was.
+  const snapBounds = clampToDisplay(snapshot && snapshot.bounds);
+  const bounds = {
+    width:  windowConfig.width  || 1000,
     height: windowConfig.height || 650,
+    ...(snapBounds ? { x: snapBounds.x, y: snapBounds.y } : {}),
   };
   const win = new BrowserWindow({
     ...bounds,
