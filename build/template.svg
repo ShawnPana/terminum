@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ophanim icon template — 1024 × 1024.
+
+  - Outer dashed gray rectangle: macOS app icon mask. Corner radius is
+    ~22.37% of the side length (228 px on this 1024 canvas). The real
+    mask is a smoothed squircle (superellipse). If you're in Figma,
+    select the rect and set Corner Smoothing to 60% for the true shape.
+  - Inner dashed red rectangle: recommended safe area. Keep your subject
+    inside it so it doesn't get clipped at small sizes.
+  - Hide / delete these guide layers before exporting.
+
+  Export PNGs at: 16, 32 (×2 → 32, 64), 128, 256 (×2 → 256, 512),
+  512, 1024 (×2). Then `iconutil -c icns icon.iconset`.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <pattern id="checker" x="0" y="0" width="64" height="64" patternUnits="userSpaceOnUse">
+      <rect width="64" height="64" fill="#e8e8e8"/>
+      <rect width="32" height="32" fill="#d0d0d0"/>
+      <rect x="32" y="32" width="32" height="32" fill="#d0d0d0"/>
+    </pattern>
+    <clipPath id="iconMask">
+      <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228"/>
+    </clipPath>
+  </defs>
+
+  <!-- transparent-background checkerboard inside the mask -->
+  <g clip-path="url(#iconMask)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#checker)"/>
+  </g>
+
+  <!-- icon mask outline -->
+  <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228"
+        fill="none" stroke="#666" stroke-width="2" stroke-dasharray="10,8"/>
+
+  <!-- safe area (≈ 80% of canvas) -->
+  <rect x="102" y="102" width="820" height="820" rx="180" ry="180"
+        fill="none" stroke="#cd0000" stroke-width="1.5" stroke-dasharray="6,6" opacity="0.6"/>
+
+  <!-- center crosshair -->
+  <line x1="512" y1="80"  x2="512" y2="200"  stroke="#888" stroke-width="1" opacity="0.4"/>
+  <line x1="512" y1="824" x2="512" y2="944"  stroke="#888" stroke-width="1" opacity="0.4"/>
+  <line x1="80"  y1="512" x2="200" y2="512"  stroke="#888" stroke-width="1" opacity="0.4"/>
+  <line x1="824" y1="512" x2="944" y2="512"  stroke="#888" stroke-width="1" opacity="0.4"/>
+
+  <!-- size label -->
+  <text x="512" y="50" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif"
+        font-size="22" fill="#666">1024 × 1024 — macOS app icon canvas</text>
+  <text x="512" y="990" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif"
+        font-size="14" fill="#cd0000">red dashed = safe area · gray dashed = mask edge</text>
+</svg>

@@ -1,4 +1,5 @@
 node_modules
 dist
+.DS_Store
 shell/zsh/.zcompdump*
 shell/zsh/.zsh_history
