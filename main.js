@@ -48,6 +48,7 @@ const UNPACKED_DIR = app.isPackaged
 const BIN_DIR = path.join(UNPACKED_DIR, 'bin');
 const CHROME_HTML = path.join(APP_DIR, 'browser-chrome.html');
 const CONFIG_UI_HTML = path.join(APP_DIR, 'config-ui.html');
+const BROWSER_PRELOAD = path.join(APP_DIR, 'browser-preload.js');
 const CHROME_BAR_HEIGHT = 28;
 const WORKSPACE_BAR_BASE_HEIGHT = 22;
 
@@ -923,14 +924,14 @@ function convertToBrowser(world, paneId, url, pid) {
 
   const view = new WebContentsView({
     webPreferences: {
-      // NO preload. We used to patch navigator.userAgentData, window.chrome,
-      // plugins, permissions, etc. here — Kasada (KPSDK) detects those
-      // patches themselves as a stealth-tool signature and blocks harder
-      // than it does a vanilla Chromium. Verified: crocs.com goes from
-      // fully blocked → fully loading when the preload is removed. Identity
-      // fixes that stay network-level (disable-blink-features, UA strip,
-      // sec-ch-ua header rewrite in main.js) are invisible to page JS.
+      // Host-gated preload: the script runs on every pane but only patches
+      // navigator on an allowlist of sites that actively refuse non-Chrome
+      // browsers (Google sign-in). On all other hosts it returns immediately
+      // — Kasada (KPSDK) detects navigator patches themselves as a
+      // stealth-tool signature and blocks harder, so we have to look like
+      // a plain Chromium to them.
       sandbox: false, contextIsolation: false, nodeIntegration: false,
+      preload: BROWSER_PRELOAD,
     },
   });
   const chromeView = new WebContentsView({
@@ -992,6 +993,7 @@ function convertToBrowser(world, paneId, url, pid) {
         backgroundColor: '#ffffff',
         webPreferences: {
           sandbox: false, contextIsolation: false, nodeIntegration: false,
+          preload: BROWSER_PRELOAD,
         },
       },
     };

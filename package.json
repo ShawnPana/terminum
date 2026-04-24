@@ -27,6 +27,7 @@
     "files": [
       "main.js",
       "renderer.js",
+      "browser-preload.js",
       "browser-chrome.html",
       "config-ui.html",
       "index.html",
