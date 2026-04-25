@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
-    "electron": "^41.3.0",
+    "electron": "github:castlabs/electron-releases#v41.1.1+wvcus",
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
   "build": {
     "appId": "com.shawnpana.ophanim",
     "productName": "Ophanim",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "dist"
     },

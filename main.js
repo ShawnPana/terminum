@@ -1,4 +1,9 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, systemPreferences } = require('electron');
+// `components` is exposed by castlabs's Electron-for-Content-Security build
+// (the `+wvcus` tag). Used to block window creation until the Widevine CDM
+// has been fetched by Chromium's Component Updater on first launch.
+// Falls back to undefined on stock Electron — the await below is a no-op then.
+const components = (() => { try { return require('electron').components; } catch { return null; } })();
 
 const path = require('path');
 const os = require('os');
@@ -17,6 +22,12 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-allow-origins', '*');
+// Let media (audio/video) start without a user gesture. CDP-driven
+// navigations don't count as gestures, so without this YouTube/Spotify/
+// etc. sit at networkState 0 with the big play button until the user
+// clicks. Browser panes here are agent-driven by design — autoplay-on
+// is the right default.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.userAgentFallback = (app.userAgentFallback || '')
   .replace(/\s?ophanim\/\S+/, '')
   .replace(/\s?Electron\/\S+/, '');
@@ -1814,7 +1825,18 @@ ipcMain.on('nav-url', (e, raw) => {
 });
 ipcMain.handle('omnibox-suggest', (_e, query) => combinedSuggest(query || ''));
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // On castlabs's ECS build, block until the Widevine CDM is installed
+  // (downloaded by Chromium's Component Updater on first launch, ~30MB).
+  // Without this, a BrowserWindow can be created before the CDM is ready
+  // and DRM-protected playback (YouTube music videos, Netflix, etc.)
+  // will fail with NotSupportedError until the user reloads.
+  if (components && typeof components.whenReady === 'function') {
+    try { await components.whenReady(); } catch (e) {
+      console.warn('[ophanim] components.whenReady failed:', e.message);
+    }
+  }
+
   // Disable macOS's press-and-hold accent picker inside this bundle. The
   // popup eats autorepeat and swallows modifier keys while it's open,
   // breaking tmux copy-mode scroll-mode (hold `i` → accent picker opens
