@@ -383,3 +383,101 @@ window.addEventListener('beforeinput', (e) => {
 }, true);
 
 ipcRenderer.send('renderer-ready');
+
+// CDP-accessible API for external agents. They attach to ophanim's
+// renderer target via the remote-debugging port (see cdp.json in
+// userData/) and call these via Runtime.evaluate. Single namespace so
+// the global scope stays tidy.
+const __opLabels = new Map(); // paneId → user-set label
+
+function __opResolve(handle) {
+  if (panes.has(handle)) return handle;
+  for (const [pid, label] of __opLabels) if (label === handle) return pid;
+  return null;
+}
+
+function __opKeyToSeq(k) {
+  if (typeof k !== 'string' || !k) return null;
+  switch (k) {
+    case 'Enter': case 'Return': return '\r';
+    case 'Escape': case 'Esc': return '\x1b';
+    case 'Tab': return '\t';
+    case 'Backspace': case 'BSpace': return '\x7f';
+    case 'Up': return '\x1b[A';
+    case 'Down': return '\x1b[B';
+    case 'Right': return '\x1b[C';
+    case 'Left': return '\x1b[D';
+    case 'Space': return ' ';
+  }
+  // C-x → control-x; M-x → ESC + x; combine: M-C-x.
+  let prefix = '';
+  let rest = k;
+  if (rest.startsWith('M-')) { prefix += '\x1b'; rest = rest.slice(2); }
+  if (rest.startsWith('C-') && rest.length === 3) {
+    const c = rest[2].toLowerCase().charCodeAt(0);
+    if (c >= 97 && c <= 122) return prefix + String.fromCharCode(c - 96);
+  }
+  if (rest.length === 1) return prefix + rest;
+  return null;
+}
+
+window.__ophanim = {
+  list() {
+    const out = [];
+    for (const [pid, entry] of panes) {
+      out.push({
+        paneId: pid,
+        kind: entry.kind,
+        label: __opLabels.get(pid) || null,
+        focused: pid === focusedPaneId,
+      });
+    }
+    return out;
+  },
+  read(handle, lines = 50) {
+    const pid = __opResolve(handle);
+    if (!pid) return null;
+    const entry = panes.get(pid);
+    if (!entry || !entry.term) return null;
+    const buf = entry.term.buffer.active;
+    const start = Math.max(0, buf.length - Math.max(1, Math.min(10000, lines | 0)));
+    const out = [];
+    for (let y = start; y < buf.length; y++) {
+      const line = buf.getLine(y);
+      out.push(line ? line.translateToString(true) : '');
+    }
+    return out.join('\n');
+  },
+  type(handle, text) {
+    const pid = __opResolve(handle);
+    if (!pid) return false;
+    ipcRenderer.send('pty-write', { paneId: pid, data: String(text) });
+    return true;
+  },
+  keys(handle, keys) {
+    const pid = __opResolve(handle);
+    if (!pid) return false;
+    const list = Array.isArray(keys) ? keys : [keys];
+    let data = '';
+    for (const k of list) {
+      const seq = __opKeyToSeq(k);
+      if (seq === null) return false;
+      data += seq;
+    }
+    if (data) ipcRenderer.send('pty-write', { paneId: pid, data });
+    return true;
+  },
+  activate(handle) {
+    const pid = __opResolve(handle);
+    if (!pid) return false;
+    ipcRenderer.send('activate-pane', { paneId: pid });
+    return true;
+  },
+  label(handle, name) {
+    const pid = __opResolve(handle);
+    if (!pid) return false;
+    if (name == null || name === '') __opLabels.delete(pid);
+    else __opLabels.set(pid, String(name));
+    return true;
+  },
+};

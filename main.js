@@ -1684,6 +1684,17 @@ ipcMain.on('pty-write', (_e, { paneId, data }) => {
   }
 });
 
+// Focus a pane programmatically (used by the CDP-accessible
+// __ophanim.activate from the renderer). Updates the workspace's focus
+// pointer + pushes layout/focus to the renderer.
+ipcMain.on('activate-pane', (_e, { paneId }) => {
+  const found = findPaneGlobal(paneId);
+  if (!found) return;
+  found.ws.focusedPaneId = paneId;
+  pushFocus(found.world);
+  markSessionDirty();
+});
+
 ipcMain.on('pty-resize', (_e, { paneId, cols, rows }) => {
   const found = findPaneGlobal(paneId);
   if (found && found.pane.kind === 'term' && found.pane.pty) {
@@ -1853,7 +1864,40 @@ app.whenReady().then(() => {
   } else {
     newWindow();
   }
+
+  // Drop a JSON file pointing external CDP clients at our debugging
+  // port. The port is auto-assigned by Chromium (--remote-debugging-port=0)
+  // and Chromium itself writes <userData>/DevToolsActivePort with the
+  // chosen port on the first line. We mirror that into a friendlier
+  // cdp.json (with a stable schema) so tools don't have to know the
+  // Chromium quirks. Best-effort with a short retry — DevToolsActivePort
+  // can take a moment after whenReady.
+  writeCdpDropfile().catch(() => {});
 });
+
+async function writeCdpDropfile() {
+  const userData = app.getPath('userData');
+  const portFile = path.join(userData, 'DevToolsActivePort');
+  let port = null;
+  for (let i = 0; i < 30 && !port; i++) {
+    try {
+      const txt = fs.readFileSync(portFile, 'utf8');
+      const n = parseInt(txt.split('\n')[0], 10);
+      if (Number.isFinite(n) && n > 0) port = n;
+    } catch {}
+    if (!port) await new Promise(r => setTimeout(r, 100));
+  }
+  if (!port) return;
+  const out = path.join(userData, 'cdp.json');
+  const payload = JSON.stringify({
+    port,
+    httpUrl: `http://127.0.0.1:${port}`,
+    note: 'GET /json to list targets; renderer target has url ending in index.html.',
+  }, null, 2);
+  try { fs.writeFileSync(out, payload); } catch {}
+  // Clean up on quit so a stale file doesn't mislead the next launch.
+  app.on('before-quit', () => { try { fs.unlinkSync(out); } catch {} });
+}
 
 // Kill any tmux session left over from a prior ophanim process that the
 // current snapshot doesn't reference. Sources of orphans:
