@@ -7,8 +7,8 @@ window; flip a pane to a browser with `browse <url>`, flip it back with
 **Self-evolving.** ophanim is meant to be modified by the agents you run
 inside it. "Make the border red", "rebind scroll-mode to Option+Space",
 "expose an option for X" — say it to an agent, it edits the source and
-rebuilds. See [`SKILL.md`](./SKILL.md) for the codebase tour and the
-config-reflex rule agents follow.
+rebuilds. See [`skills/ophanim/SKILL.md`](./skills/ophanim/SKILL.md) for
+the codebase tour and the config-reflex rule agents follow.
 
 ## Install
 
