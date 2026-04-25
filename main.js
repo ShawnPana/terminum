@@ -60,6 +60,15 @@ const BIN_DIR = path.join(UNPACKED_DIR, 'bin');
 const CHROME_HTML = path.join(APP_DIR, 'browser-chrome.html');
 const CONFIG_UI_HTML = path.join(APP_DIR, 'config-ui.html');
 const BROWSER_PRELOAD = path.join(APP_DIR, 'browser-preload.js');
+// Read the preload source once at boot so we can inject it into every
+// browser pane's main world via CDP. We can't use it as an Electron
+// preload anymore because we run browser panes with contextIsolation:true
+// (required for YouTube polymer SPA), and a preload at that point lives
+// in an isolated world where its navigator patches don't reach the page.
+const BROWSER_INJECT_SOURCE = (() => {
+  try { return fs.readFileSync(BROWSER_PRELOAD, 'utf8'); }
+  catch { return ''; }
+})();
 const CHROME_BAR_HEIGHT = 28;
 const WORKSPACE_BAR_BASE_HEIGHT = 22;
 
@@ -391,6 +400,30 @@ function loadConfigFromDisk() {
 function pushBrowserTheme(pane) {
   if (!pane || !pane.chromeView || pane.chromeView.webContents.isDestroyed()) return;
   try { pane.chromeView.webContents.send('chrome-theme', browserConfig); } catch {}
+}
+
+// Inject browser-preload.js into a browser pane's MAIN world via CDP.
+// We can't just set `preload` on the WebContentsView because pane panes
+// run with contextIsolation:true (required for YouTube polymer SPA),
+// and a preload there lives in an isolated world where defineProperty
+// on navigator doesn't reach the page. Page.addScriptToEvaluateOnNewDocument
+// runs the script in the page's main world before any page script on
+// every navigation — exactly what we need for the navigator spoof on
+// Google sign-in hosts. The script self-checks the host so it no-ops
+// elsewhere (Kasada-style detectors fingerprint the patches themselves).
+function injectBrowserPaneScript(viewOrLike) {
+  if (!BROWSER_INJECT_SOURCE) return;
+  const wc = viewOrLike.webContents || viewOrLike;
+  try {
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    wc.debugger.sendCommand('Page.enable').then(() =>
+      wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
+        source: BROWSER_INJECT_SOURCE,
+      })
+    ).catch((e) => console.warn('[ophanim] addScript failed:', e.message));
+  } catch (e) {
+    console.warn('[ophanim] debugger attach failed:', e.message);
+  }
 }
 
 function pushRuntimeConfig(world) {
@@ -1149,16 +1182,18 @@ function convertToBrowser(world, paneId, url, pid, opts) {
 
   const view = new WebContentsView({
     webPreferences: {
-      // Host-gated preload: the script runs on every pane but only patches
-      // navigator on an allowlist of sites that actively refuse non-Chrome
-      // browsers (Google sign-in). On all other hosts it returns immediately
-      // — Kasada (KPSDK) detects navigator patches themselves as a
-      // stealth-tool signature and blocks harder, so we have to look like
-      // a plain Chromium to them.
-      sandbox: false, contextIsolation: false, nodeIntegration: false,
-      preload: BROWSER_PRELOAD,
+      // Chrome-default isolation. Earlier versions ran with sandbox:false
+      // and contextIsolation:false to let a preload patch navigator from
+      // the same world the page used; YouTube polymer's SPA router stalls
+      // under that config (network requests for the new video never fire
+      // after in-page click navigation). Switching to chrome-default
+      // isolation fixes SPA navigation across the board. Navigator
+      // spoofing for Google sign-in moves to CDP-injected main-world
+      // script (see injectBrowserPaneScript below).
+      sandbox: true, contextIsolation: true, nodeIntegration: false,
     },
   });
+  injectBrowserPaneScript(view);
   const chromeView = new WebContentsView({
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
@@ -1218,14 +1253,14 @@ function convertToBrowser(world, paneId, url, pid, opts) {
         width: 520, height: 680,
         backgroundColor: '#ffffff',
         webPreferences: {
-          sandbox: false, contextIsolation: false, nodeIntegration: false,
-          preload: BROWSER_PRELOAD,
+          sandbox: true, contextIsolation: true, nodeIntegration: false,
         },
       },
     };
   });
   view.webContents.on('did-create-window', (win, { url }) => {
     console.log('[popup] did-create-window', url);
+    try { injectBrowserPaneScript({ webContents: win.webContents }); } catch {}
   });
   // Auto-accept common permission requests (microphone, clipboard, etc.).
   // Google sign-in can gate on these silently.
