@@ -1,6 +1,6 @@
 ---
 name: ophanim
-description: The ophanim terminal+browser hybrid. Use when entering the ophanim repo — primes agents on what ophanim is, how its code is laid out, and the self-evolving-by-agent-edit posture the project expects.
+description: Primer for agents working inside the ophanim repo — what ophanim is, how its code is laid out, where config lives, and how to add new configurable options without breaking the schema-driven UI.
 ---
 
 # ophanim
@@ -10,21 +10,6 @@ same window; flip a pane to a browser with `browse <url>`, flip it back
 with `Alt+Esc`. macOS-first. tmux-backed so shells survive quit +
 relaunch. Session restore brings back the full layout, shells, URLs and
 back/forward history.
-
-## Self-evolving
-
-**ophanim is meant to be modified by agents.** When a user says "make
-the border red", "add a shortcut for X", "scrolling should be faster",
-"the config should also expose Y" — the expected response is a code
-change, not a shell alias or a config tweak in isolation. The codebase
-is intentionally small and keeps config / keybindings / theme surfaces
-concentrated in `main.js` so changes are localized and don't need a
-refactor.
-
-The implicit deal: the user describes behavior they want, you edit the
-source and rebuild. This SKILL.md exists so future agents enter that
-loop with the right mental model and don't waste turns re-learning the
-layout.
 
 ## Architecture (90-second tour)
 

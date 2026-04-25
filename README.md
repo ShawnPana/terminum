@@ -4,12 +4,6 @@ A terminal that can summon a browser. Tile terminals and web pages in the same
 window; flip a pane to a browser with `browse <url>`, flip it back with
 `Alt+Esc`. macOS-first.
 
-**Self-evolving.** ophanim is meant to be modified by the agents you run
-inside it. "Make the border red", "rebind scroll-mode to Option+Space",
-"expose an option for X" — say it to an agent, it edits the source and
-rebuilds. See [`skills/ophanim/SKILL.md`](./skills/ophanim/SKILL.md) for
-the codebase tour and the config-reflex rule agents follow.
-
 ## Install
 
 ```bash
