@@ -41,7 +41,21 @@ the 1px inset around the WebContentsViews — that's the focus ring.
 
 ## Where config lives
 
-All defaults in `main.js`:
+**At runtime** the user has two files in `~/.config/ophanim/`:
+
+- `defaults.json` — auto-rewritten on every launch from the source
+  schema. Contains every setting with its default value and an inline
+  `_reference` block describing what each one does. **Read this file
+  first** when the user asks "how do I change X?" or "what keys does
+  ophanim use?" — it's the source of truth for what's configurable
+  right now.
+- `config.json` — user overrides. Only fields that differ from default
+  need to be present; everything else falls back. Edits hot-reload (no
+  relaunch needed).
+
+The in-app `config` command opens a schema-driven UI for the same file.
+
+**In source**, all defaults are defined in `main.js`:
 
 - `DEFAULT_BINDINGS` — keyboard shortcuts (action → chord strings).
 - `DEFAULT_TERMINAL` — font, theme, shell, tmux path, scroll mode.
